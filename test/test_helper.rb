@@ -22,6 +22,15 @@ Dotenv.load
 
 ActiveRecord::Base.establish_connection(ENV['DATABASE_URL'])
 
+def build_json(controller, relation, options)
+  case PostgresExt::Serializers::AMS_VERSION
+  when '0.8'
+    ActiveModel::Serializer.build_json(controller, relation, options)
+  when '0.9'
+    controller.send(:build_json_serializer, relation, options || {})
+  end
+end
+
 class TestController < ActionController::Base
   def url_options
     {}

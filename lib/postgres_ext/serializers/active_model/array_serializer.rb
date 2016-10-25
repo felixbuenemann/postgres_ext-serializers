@@ -2,11 +2,23 @@ module PostgresExt::Serializers::ActiveModel
   module ArraySerializer
     def self.prepended(base)
       base.send :include, IncludeMethods
+      if PostgresExt::Serializers::AMS_VERSION == '0.9'
+        base.send :prepend, PrependMethods
+      end
+    end
+
+    module PrependMethods
+      def initialize(object, options={})
+        super
+        @options = options
+      end
+
+      attr_reader :options
     end
 
     module IncludeMethods
       def to_json(*)
-        root = @options.fetch(:root, self.class.root)
+        root = self.respond_to?(:root) ? self.root : @options.fetch(:root, self.class.root)
         if ActiveRecord::Relation === object && root != false
           _postgres_serializable_array
         else
@@ -72,9 +84,11 @@ module PostgresExt::Serializers::ActiveModel
       end
 
       _serializer = serializer_class.new klass.new, options
+      _json_key = (_serializer.respond_to?(:json_key) ? _serializer.json_key : _serializer.root_name).to_s
+
       root_key = local_options[:root].to_s if local_options[:root]
-      root_key ||=  _serializer.root_name.to_s if local_options[:single_record]
-      root_key ||=  _serializer.root_name.to_s.pluralize
+      root_key ||= _json_key if local_options[:single_record]
+      root_key ||= _json_key.pluralize
       @_embedded << root_key
 
       attributes = serializer_class._attributes.select do |key, value|
@@ -132,8 +146,10 @@ module PostgresExt::Serializers::ActiveModel
         end
       end
 
-      associations.each do |key, association_class|
-        association = association_class.new key, _serializer, options
+      associations.each do |key, association|
+        unless association.is_a? ActiveModel::Serializer::Association
+          association = association.new key, _serializer, options
+        end
 
         association_reflection = klass.reflect_on_association(key)
         fkey = association_reflection.foreign_key
@@ -171,8 +187,10 @@ module PostgresExt::Serializers::ActiveModel
       bind_values += relation.bind_values if relation.respond_to?(:bind_values)
       relation_table = _arel_to_cte(arel, root_key, bind_values)
 
-      associations.each do |key, association_class|
-        association = association_class.new key, _serializer, options
+      associations.each do |key, association|
+        unless association.is_a? ActiveModel::Serializer::Association
+          association = association.new key, _serializer, options
+        end
         association_reflection = klass.reflect_on_association(key)
 
         if association.embed_in_root? && !@_embedded.member?(key.to_s)
@@ -180,8 +198,10 @@ module PostgresExt::Serializers::ActiveModel
           constraining_table_param = association_reflection.macro == :has_many ? ids_table_arel : relation_table
           association_query = _reflection_scope(association_reflection)
 
-          _include_relation_in_root(association_query, association_reflection.foreign_key,
-            constraining_table_param, serializer: association.target_serializer, belongs_to: belongs_to, root: association_class.options[:root])
+          _include_relation_in_root(association_query, association_reflection.foreign_key, constraining_table_param,
+            serializer: association.respond_to?(:serializer_from_options) ? association.serializer_from_options : association.target_serializer,
+            belongs_to: belongs_to,
+            root: association.options[:root])
         end
       end
 
@@ -230,7 +250,17 @@ module PostgresExt::Serializers::ActiveModel
     end
 
     def _serializer_class(klass)
-      klass.active_model_serializer
+      if klass.respond_to? :active_model_serializer
+        klass.active_model_serializer
+      elsif ''.respond_to? :safe_constantize
+        "#{klass.name}Serializer".safe_constantize
+      else
+        begin
+          "#{klass.name}Serializer".constantize
+        rescue NameError => e
+          raise unless e.message =~ /uninitialized constant/
+        end
+      end
     end
 
     def _coalesce_arrays(column, aliaz = nil)

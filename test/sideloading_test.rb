@@ -1,7 +1,7 @@
 require 'test_helper'
 
 describe 'ArraySerializer patch' do
-  let(:serializer) { ActiveModel::Serializer.build_json(controller, relation, options) }
+  let(:serializer) { build_json(controller, relation, options) }
   let(:json_data)  { serializer.to_json }
   let(:options)    { }
 
